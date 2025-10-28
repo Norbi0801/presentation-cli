@@ -23,9 +23,27 @@ pozwala wskazać domyślny baner wyświetlany przed prezentacją.
 
 ### Uruchomienie
 
+Aplikacja korzysta z [clap](https://github.com/clap-rs/clap), dzięki czemu
+zapewnia czytelne komunikaty o błędach oraz wbudowaną pomoc:
+
 ```bash
-cargo run -- <ścieżka_do_pliku_z_prezentacją> [ścieżka_do_banera]
+cargo run -- --help
 ```
 
-Jeżeli drugi argument nie zostanie podany, aplikacja użyje ścieżki określonej
-w zmiennej `DEFAULT_BANNER_PATH`.
+Podstawowe uruchomienie wymaga wskazania pliku z treścią prezentacji:
+
+```bash
+cargo run -- presentations/demo.txt
+```
+
+Najważniejsze opcje:
+
+- `--banner <ŚCIEŻKA>` – niestandardowy baner ASCII
+- `--title <TYTUŁ>` – nadpisanie tytułu prezentacji
+- `--frame-width <LICZBA>` – szerokość ramki prezentacji
+- `--theme <neon|amber|arctic>` – wybór jednego z gotowych motywów kolorystycznych
+- `--instant` – wyłącza animacje (natychmiastowe renderowanie)
+- `--skip-banner` – pomija wyświetlenie baneru
+
+Jeżeli nie podasz baneru, aplikacja użyje ścieżki określonej w zmiennej
+`DEFAULT_BANNER_PATH`.
