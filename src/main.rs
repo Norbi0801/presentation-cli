@@ -5,11 +5,66 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
-const FRAME_WIDTH: usize = 200;
-const COLOR_ACCENT: &str = "\x1b[38;5;208m";
-const COLOR_DIM: &str = "\x1b[38;5;94m";
-const COLOR_GLOW: &str = "\x1b[38;5;159m";
+use dotenvy::dotenv;
+
 const RESET: &str = "\x1b[0m";
+
+#[derive(Debug, Clone)]
+struct Config {
+    frame_width: usize,
+    color_accent: String,
+    color_dim: String,
+    color_glow: String,
+    default_banner_path: String,
+    presentation_title: String,
+}
+
+impl Config {
+    fn from_env() -> Result<Self, Box<dyn std::error::Error>> {
+        let frame_width = env::var("FRAME_WIDTH").unwrap_or_else(|_| "200".to_string());
+        let color_accent =
+            env::var("COLOR_ACCENT").unwrap_or_else(|_| "\x1b[38;5;208m".to_string());
+        let color_dim = env::var("COLOR_DIM").unwrap_or_else(|_| "\x1b[38;5;94m".to_string());
+        let color_glow = env::var("COLOR_GLOW").unwrap_or_else(|_| "\x1b[38;5;159m".to_string());
+        let default_banner_path = env::var("DEFAULT_BANNER_PATH")
+            .unwrap_or_else(|_| "presentations/banner.txt".to_string());
+        let presentation_title =
+            env::var("PRESENTATION_TITLE").unwrap_or_else(|_| "Rust Lab Terminal".to_string());
+
+        Ok(Self {
+            frame_width: frame_width.parse::<usize>()?,
+            color_accent,
+            color_dim,
+            color_glow,
+            default_banner_path,
+            presentation_title,
+        })
+    }
+
+    fn frame_width(&self) -> usize {
+        self.frame_width
+    }
+
+    fn color_accent(&self) -> &str {
+        &self.color_accent
+    }
+
+    fn color_dim(&self) -> &str {
+        &self.color_dim
+    }
+
+    fn color_glow(&self) -> &str {
+        &self.color_glow
+    }
+
+    fn default_banner_path(&self) -> &str {
+        &self.default_banner_path
+    }
+
+    fn presentation_title(&self) -> &str {
+        &self.presentation_title
+    }
+}
 
 fn main() {
     if let Err(error) = run() {
@@ -19,6 +74,9 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
+    dotenv().ok();
+    let config = Config::from_env()?;
+
     let mut args = env::args().skip(1);
 
     let Some(path_arg) = args.next() else {
@@ -29,16 +87,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new(&path_arg);
     let banner_arg = args
         .next()
-        .unwrap_or_else(|| "presentations/banner.txt".to_string());
+        .unwrap_or_else(|| config.default_banner_path().to_string());
     let banner_path = Path::new(&banner_arg);
 
-    display_banner(banner_path)?;
+    display_banner(&config, banner_path)?;
     println!();
-    retro_separator("Rust Lab Terminal");
+    retro_separator(&config, config.presentation_title());
     println!(
         "{}SOURCE :: {}{}{}",
-        COLOR_DIM,
-        COLOR_ACCENT,
+        config.color_dim(),
+        config.color_accent(),
         path.display(),
         RESET
     );
@@ -48,33 +106,34 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|error| io::Error::new(error.kind(), format!("{}: {}", path.display(), error)))?;
     let reader = BufReader::new(file);
 
-    print_frame_top();
+    print_frame_top(&config);
     let mut rendered_anything = false;
     for (index, line) in reader.lines().enumerate() {
         let line = line?;
         rendered_anything = true;
 
         if index == 0 {
-            wait_for_enter("Naciśnij Enter, aby rozpocząć prezentację...")?;
+            wait_for_enter(&config, "Naciśnij Enter, aby rozpocząć prezentację...")?;
         } else {
-            wait_for_enter("Enter -> kolejna linia")?;
+            wait_for_enter(&config, "Enter -> kolejna linia")?;
         }
 
-        transition_animation()?;
+        transition_animation(&config)?;
         println!();
 
-        animate_line(index, line.trim_end_matches('\r'))?;
+        animate_line(&config, index, line.trim_end_matches('\r'))?;
     }
 
     if !rendered_anything {
-        print_empty_frame_message()?;
+        print_empty_frame_message(&config)?;
     }
-    print_frame_bottom();
+    print_frame_bottom(&config);
 
     if !rendered_anything {
         println!(
             "{}(Plik nie zawiera żadnych linii do zaprezentowania){}",
-            COLOR_DIM, RESET
+            config.color_dim(),
+            RESET
         );
     }
 
@@ -83,7 +142,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn display_banner(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn display_banner(config: &Config, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let banner = std::fs::read_to_string(path).map_err(|error| {
         io::Error::new(
             error.kind(),
@@ -91,14 +150,14 @@ fn display_banner(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         )
     })?;
 
-    crt_warmup()?;
+    crt_warmup(config)?;
     let mut stdout = io::stdout();
 
     for line in banner.lines() {
-        println!("{}{}{}", COLOR_DIM, line, RESET);
+        println!("{}{}{}", config.color_dim(), line, RESET);
         stdout.flush()?;
         thread::sleep(Duration::from_millis(70));
-        print!("\x1b[1A\r{}{}{}\x1b[0K", COLOR_ACCENT, line, RESET);
+        print!("\x1b[1A\r{}{}{}\x1b[0K", config.color_accent(), line, RESET);
         stdout.flush()?;
         println!();
         thread::sleep(Duration::from_millis(120));
@@ -108,9 +167,9 @@ fn display_banner(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn wait_for_enter(message: &str) -> io::Result<()> {
+fn wait_for_enter(config: &Config, message: &str) -> io::Result<()> {
     let mut stdout = io::stdout();
-    print!("{}{}{} ", COLOR_DIM, message, RESET);
+    print!("{}{}{} ", config.color_dim(), message, RESET);
     stdout.flush()?;
 
     let mut buffer = String::new();
@@ -118,7 +177,7 @@ fn wait_for_enter(message: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn transition_animation() -> io::Result<()> {
+fn transition_animation(config: &Config) -> io::Result<()> {
     let frames = [
         "[==>] forging slide",
         "[=>>] forging slide",
@@ -127,12 +186,12 @@ fn transition_animation() -> io::Result<()> {
     ];
     let mut stdout = io::stdout();
     for frame in frames.iter().cycle().take(8) {
-        print!("\r{}{}{}  ", COLOR_DIM, frame, RESET);
+        print!("\r{}{}{}  ", config.color_dim(), frame, RESET);
         stdout.flush()?;
         thread::sleep(Duration::from_millis(90));
     }
 
-    print!("\r{}[OK] forge complete{}  ", COLOR_ACCENT, RESET);
+    print!("\r{}[OK] forge complete{}  ", config.color_accent(), RESET);
     stdout.flush()?;
     thread::sleep(Duration::from_millis(260));
     print!("\r\x1b[0K");
@@ -140,13 +199,13 @@ fn transition_animation() -> io::Result<()> {
     Ok(())
 }
 
-fn animate_line(index: usize, text: &str) -> io::Result<()> {
+fn animate_line(config: &Config, index: usize, text: &str) -> io::Result<()> {
     let mut stdout = io::stdout();
     let index_label = format!("{:03}", index + 1);
     let prefix = format!("| {}:: ", index_label);
-    let available = FRAME_WIDTH.saturating_sub(prefix.len() + 1);
+    let available = config.frame_width().saturating_sub(prefix.len() + 1);
 
-    print!("{}{}{}", COLOR_DIM, prefix, RESET);
+    print!("{}{}{}", config.color_dim(), prefix, RESET);
     stdout.flush()?;
 
     let glyphs: Vec<char> = text.chars().collect();
@@ -157,13 +216,13 @@ fn animate_line(index: usize, text: &str) -> io::Result<()> {
         }
 
         if printed == available.saturating_sub(1) && i < glyphs.len() - 1 {
-            print!("{}>{}", COLOR_ACCENT, RESET);
+            print!("{}>{}", config.color_accent(), RESET);
             stdout.flush()?;
             printed += 1;
             break;
         }
 
-        print!("{}{}{}", COLOR_ACCENT, ch, RESET);
+        print!("{}{}{}", config.color_accent(), ch, RESET);
         stdout.flush()?;
         thread::sleep(Duration::from_millis(55));
         printed += 1;
@@ -171,66 +230,76 @@ fn animate_line(index: usize, text: &str) -> io::Result<()> {
 
     let padding = available.saturating_sub(printed);
     if padding > 0 {
-        print!("{}{}{}", COLOR_DIM, " ".repeat(padding), RESET);
+        print!("{}{}{}", config.color_dim(), " ".repeat(padding), RESET);
     }
-    print!("{}|{}", COLOR_DIM, RESET);
+    print!("{}|{}", config.color_dim(), RESET);
     println!();
     Ok(())
 }
 
-fn retro_separator(label: &str) {
+fn retro_separator(config: &Config, label: &str) {
     let label = format!(":: {} ::", label.to_uppercase());
-    let fill = FRAME_WIDTH.saturating_sub(label.len());
+    let fill = config.frame_width().saturating_sub(label.len());
     let left = fill / 2;
     let right = fill - left;
 
     println!(
         "{}{}{}{}{}{}{}",
-        COLOR_DIM,
+        config.color_dim(),
         "=".repeat(left),
-        COLOR_GLOW,
+        config.color_glow(),
         label,
-        COLOR_DIM,
+        config.color_dim(),
         "=".repeat(right),
         RESET
     );
 }
 
-fn print_frame_top() {
-    println!("{}+{}+{}", COLOR_DIM, "-".repeat(FRAME_WIDTH - 2), RESET);
+fn print_frame_top(config: &Config) {
+    println!(
+        "{}+{}+{}",
+        config.color_dim(),
+        "-".repeat(config.frame_width().saturating_sub(2)),
+        RESET
+    );
 }
 
-fn print_frame_bottom() {
-    println!("{}+{}+{}", COLOR_DIM, "-".repeat(FRAME_WIDTH - 2), RESET);
+fn print_frame_bottom(config: &Config) {
+    println!(
+        "{}+{}+{}",
+        config.color_dim(),
+        "-".repeat(config.frame_width().saturating_sub(2)),
+        RESET
+    );
 }
 
-fn print_empty_frame_message() -> io::Result<()> {
+fn print_empty_frame_message(config: &Config) -> io::Result<()> {
     let mut stdout = io::stdout();
     let prefix = "| --- :: ";
-    let available = FRAME_WIDTH.saturating_sub(prefix.len() + 1);
+    let available = config.frame_width().saturating_sub(prefix.len() + 1);
     let message = "(brak treści w pliku)";
     let glyphs: Vec<char> = message.chars().collect();
 
-    print!("{}{}{}", COLOR_DIM, prefix, RESET);
+    print!("{}{}{}", config.color_dim(), prefix, RESET);
     stdout.flush()?;
 
     let mut printed = 0;
     for ch in glyphs.iter().take(available) {
-        print!("{}{}{}", COLOR_DIM, ch, RESET);
+        print!("{}{}{}", config.color_dim(), ch, RESET);
         stdout.flush()?;
         printed += 1;
     }
 
     let padding = available.saturating_sub(printed);
     if padding > 0 {
-        print!("{}{}{}", COLOR_DIM, " ".repeat(padding), RESET);
+        print!("{}{}{}", config.color_dim(), " ".repeat(padding), RESET);
     }
-    print!("{}|{}", COLOR_DIM, RESET);
+    print!("{}|{}", config.color_dim(), RESET);
     println!();
     Ok(())
 }
 
-fn crt_warmup() -> io::Result<()> {
+fn crt_warmup(config: &Config) -> io::Result<()> {
     let mut stdout = io::stdout();
     let phases = [
         "[.. ] spinning up retro tube",
@@ -240,7 +309,7 @@ fn crt_warmup() -> io::Result<()> {
     ];
 
     for phase in &phases {
-        print!("\r{}{}{}", COLOR_DIM, phase, RESET);
+        print!("\r{}{}{}", config.color_dim(), phase, RESET);
         stdout.flush()?;
         thread::sleep(Duration::from_millis(240));
     }
@@ -253,7 +322,7 @@ fn crt_warmup() -> io::Result<()> {
 fn print_usage() {
     println!(
         "Użycie: cargo run -- <ścieżka_do_pliku> [ścieżka_banera]\n\
-        Domyślny baner: presentations/banner.txt\n\
+        Domyślny baner: wartość DEFAULT_BANNER_PATH z pliku .env\n\
         Przykład: cargo run -- presentations/example.txt"
     );
 }
