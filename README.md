@@ -42,8 +42,26 @@ Najważniejsze opcje:
 - `--title <TYTUŁ>` – nadpisanie tytułu prezentacji
 - `--frame-width <LICZBA>` – szerokość ramki prezentacji
 - `--theme <neon|amber|arctic>` – wybór jednego z gotowych motywów kolorystycznych
+- `--theme-path <ŚCIEŻKA>` – wczytanie motywu z pliku TOML (priorytet nad `--theme`)
 - `--instant` – wyłącza animacje (natychmiastowe renderowanie)
 - `--skip-banner` – pomija wyświetlenie baneru
 
 Jeżeli nie podasz baneru, aplikacja użyje ścieżki określonej w zmiennej
 `DEFAULT_BANNER_PATH`.
+
+### Motywy w plikach TOML
+
+Możesz przygotować własny motyw kolorystyczny w pliku TOML i przekazać go
+przełącznikiem `--theme-path`. Przykładowy plik znajduje się w katalogu
+`themes/nebula.toml`:
+
+```toml
+name = "Nebula"
+accent = "\x1b[38;5;140m"
+dim = "\x1b[38;5;240m"
+glow = "\x1b[38;5;219m"
+```
+
+Pole `name` jest opcjonalne – jeśli go pominiemy, nazwa motywu zostanie
+odczytana z nazwy pliku. Poszczególne pola odpowiadają kodom kolorów ANSI
+zastosowanym w prezentacji.
