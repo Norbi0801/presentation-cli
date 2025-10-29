@@ -45,6 +45,16 @@ Najważniejsze opcje:
 - `--theme-path <ŚCIEŻKA>` – wczytanie motywu z pliku TOML (priorytet nad `--theme`)
 - `--instant` – wyłącza animacje (natychmiastowe renderowanie)
 - `--skip-banner` – pomija wyświetlenie baneru
+- `--watch` – obserwuje plik wejściowy i automatycznie odświeża prezentację po zmianach
+
+Tryb obserwacji można uruchomić poleceniem:
+
+```bash
+cargo run -- presentations/demo.txt --watch
+```
+
+Aplikacja będzie nasłuchiwała zmian w pliku i po krótkim opóźnieniu (debounce)
+ponownie wyrenderuje prezentację.
 
 ### Tryb interaktywny i skróty
 

@@ -11,9 +11,11 @@ use dotenvy::dotenv;
 
 mod interaction;
 mod theme;
+mod watch;
 
 use crate::interaction::run_presentation;
 use crate::theme::{self, ThemePalette};
+use crate::watch::watch_file;
 
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
@@ -51,6 +53,9 @@ struct Cli {
     /// Pominięcie baneru startowego
     #[arg(long)]
     skip_banner: bool,
+    /// Obserwowanie pliku i automatyczne odświeżanie prezentacji
+    #[arg(long)]
+    watch: bool,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -289,10 +294,50 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         println!();
     }
 
-    retro_separator(&config, config.presentation_title());
-    print_session_meta(&config, &script_path);
+    present_script(&mut config, &script_path)?;
 
-    let file = File::open(&script_path).map_err(|error| {
+    if cli.watch {
+        println!(
+            "{}WATCH :: {}{}aktywny tryb nasłuchiwania (Ctrl+C aby zakończyć){}",
+            config.color_dim(),
+            BOLD,
+            config.color_accent(),
+            RESET
+        );
+
+        let debounce = Duration::from_millis(250);
+        let watch_path = script_path.clone();
+
+        watch_file(&watch_path, debounce, || {
+            println!();
+            println!(
+                "{}SYNC  :: {}{}wykryto zmianę, odświeżanie prezentacji{}",
+                config.color_dim(),
+                BOLD,
+                config.color_glow(),
+                RESET
+            );
+
+            if let Err(error) = present_script(&mut config, &watch_path) {
+                eprintln!("\x1b[31mBłąd:\x1b[0m {error}");
+            }
+
+            true
+        })
+        .map_err(|error| -> Box<dyn std::error::Error> { Box::new(error) })?;
+    }
+
+    Ok(())
+}
+
+fn present_script(
+    config: &mut Config,
+    script_path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    retro_separator(config, config.presentation_title());
+    print_session_meta(config, script_path);
+
+    let file = File::open(script_path).map_err(|error| {
         io::Error::new(
             error.kind(),
             format!("{}: {}", script_path.display(), error),
@@ -302,9 +347,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let segments = parse_segments(reader)?;
 
     if segments.is_empty() {
-        print_frame_top(&config);
-        print_empty_frame_message(&config)?;
-        print_frame_bottom(&config);
+        print_frame_top(config);
+        print_empty_frame_message(config)?;
+        print_frame_bottom(config);
         println!(
             "{}⚠ {}{}Brak treści do wyświetlenia{}",
             config.color_dim(),
@@ -316,7 +361,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    run_presentation(&mut config, &segments)?;
+    run_presentation(config, &segments)?;
 
     println!();
 
