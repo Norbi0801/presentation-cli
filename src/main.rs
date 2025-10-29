@@ -1,8 +1,10 @@
+use std::collections::HashSet;
 use std::env;
 use std::fmt;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -28,8 +30,9 @@ const UNDERLINE: &str = "\x1b[4m";
     disable_help_subcommand = true
 )]
 struct Cli {
-    /// Plik z treścią prezentacji
-    script: PathBuf,
+    /// Plik z treścią prezentacji (można podać wiele)
+    #[arg(value_name = "SCRIPT", num_args = 0..)]
+    scripts: Vec<PathBuf>,
     /// Ścieżka do pliku baneru ASCII
     #[arg(short, long)]
     banner: Option<PathBuf>,
@@ -51,6 +54,15 @@ struct Cli {
     /// Pominięcie baneru startowego
     #[arg(long)]
     skip_banner: bool,
+    /// Tryb prezentera z notatkami i zegarem
+    #[arg(long)]
+    presenter: bool,
+    /// Lista prezentacji do odtworzenia
+    #[arg(long)]
+    playlist: Option<PathBuf>,
+    /// Katalog z prezentacjami (alfabetycznie)
+    #[arg(long)]
+    directory: Option<PathBuf>,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -96,6 +108,7 @@ pub(crate) struct Config {
     presentation_title: String,
     theme_label: String,
     animations_enabled: bool,
+    presenter_mode: bool,
 }
 
 impl Config {
@@ -156,6 +169,7 @@ impl Config {
             presentation_title,
             theme_label,
             animations_enabled: !cli.instant,
+            presenter_mode: cli.presenter,
         })
     }
 
@@ -191,6 +205,10 @@ impl Config {
         self.animations_enabled
     }
 
+    pub(crate) fn presenter_mode(&self) -> bool {
+        self.presenter_mode
+    }
+
     pub(crate) fn pause(&self, duration: Duration) {
         if self.animations_enabled {
             thread::sleep(duration);
@@ -222,8 +240,55 @@ pub(crate) enum SegmentKind {
     Separator,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct Slide {
+    source: Arc<PathBuf>,
+    deck_index: usize,
+    index_in_source: usize,
+    segments: Vec<Segment>,
+    notes: Vec<String>,
+}
+
+impl Slide {
+    fn new(
+        source: Arc<PathBuf>,
+        deck_index: usize,
+        index_in_source: usize,
+        segments: Vec<Segment>,
+        notes: Vec<String>,
+    ) -> Self {
+        Self {
+            source,
+            deck_index,
+            index_in_source,
+            segments,
+            notes,
+        }
+    }
+
+    pub(crate) fn segments(&self) -> &[Segment] {
+        &self.segments
+    }
+
+    pub(crate) fn notes(&self) -> &[String] {
+        &self.notes
+    }
+
+    pub(crate) fn source(&self) -> &Path {
+        &self.source
+    }
+
+    pub(crate) fn deck_index(&self) -> usize {
+        self.deck_index
+    }
+
+    pub(crate) fn index_in_source(&self) -> usize {
+        self.index_in_source
+    }
+}
+
 impl Segment {
-    fn new(kind: SegmentKind) -> Self {
+    pub(crate) fn new(kind: SegmentKind) -> Self {
         Self { kind }
     }
 
@@ -232,21 +297,63 @@ impl Segment {
     }
 }
 
-fn parse_segments<R: BufRead>(reader: R) -> io::Result<Vec<Segment>> {
-    let mut segments = Vec::new();
+fn parse_slides<R: BufRead>(
+    reader: R,
+    source: &Arc<PathBuf>,
+    deck_index: usize,
+) -> io::Result<Vec<Slide>> {
+    let mut slides = Vec::new();
+    let mut current_segments = Vec::new();
+    let mut current_notes = Vec::new();
+    let mut index_in_source = 0;
+
     for line in reader.lines() {
         let line = line?;
-        segments.push(classify_segment(&line));
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("@@") {
+            let note = trimmed.trim_start_matches("@@").trim();
+            if !note.is_empty() {
+                current_notes.push(note.to_string());
+            }
+            continue;
+        }
+
+        if trimmed.is_empty() {
+            if !current_segments.is_empty() || !current_notes.is_empty() {
+                index_in_source += 1;
+                slides.push(Slide::new(
+                    Arc::clone(source),
+                    deck_index,
+                    index_in_source,
+                    current_segments,
+                    current_notes,
+                ));
+                current_segments = Vec::new();
+                current_notes = Vec::new();
+            }
+            continue;
+        }
+
+        current_segments.push(classify_segment(&line));
     }
-    Ok(segments)
+
+    if !current_segments.is_empty() || !current_notes.is_empty() {
+        index_in_source += 1;
+        slides.push(Slide::new(
+            Arc::clone(source),
+            deck_index,
+            index_in_source,
+            current_segments,
+            current_notes,
+        ));
+    }
+
+    Ok(slides)
 }
 
 fn classify_segment(line: &str) -> Segment {
     let trimmed = line.trim();
-    if trimmed.is_empty() {
-        return Segment::new(SegmentKind::Plain(String::new()));
-    }
-
     if trimmed.len() >= 3 && trimmed.chars().all(|ch| matches!(ch, '-' | '–' | '=')) {
         return Segment::new(SegmentKind::Separator);
     }
@@ -271,6 +378,97 @@ fn classify_segment(line: &str) -> Segment {
     Segment::new(SegmentKind::Plain(trimmed.to_string()))
 }
 
+fn gather_sources(cli: &Cli) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+    let mut ordered = Vec::new();
+    let mut seen = HashSet::new();
+
+    for script in &cli.scripts {
+        if seen.insert(script.clone()) {
+            ordered.push(script.clone());
+        }
+    }
+
+    if let Some(path) = cli.playlist.as_deref() {
+        for entry in read_playlist(path)? {
+            if seen.insert(entry.clone()) {
+                ordered.push(entry);
+            }
+        }
+    }
+
+    if let Some(directory) = cli.directory.as_deref() {
+        for entry in read_directory(directory)? {
+            if seen.insert(entry.clone()) {
+                ordered.push(entry);
+            }
+        }
+    }
+
+    if ordered.is_empty() {
+        return Err("Brak źródeł prezentacji (podaj plik, --playlist lub --directory)".into());
+    }
+
+    Ok(ordered)
+}
+
+fn read_playlist(path: &Path) -> io::Result<Vec<PathBuf>> {
+    let base = path.parent().unwrap_or_else(|| Path::new("."));
+    let content = fs::read_to_string(path)?;
+    let mut entries = Vec::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        let candidate = PathBuf::from(trimmed);
+        let resolved = if candidate.is_absolute() {
+            candidate
+        } else {
+            base.join(candidate)
+        };
+        entries.push(resolved);
+    }
+
+    Ok(entries)
+}
+
+fn read_directory(path: &Path) -> io::Result<Vec<PathBuf>> {
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            entries.push(entry.path());
+        }
+    }
+    entries.sort();
+    Ok(entries)
+}
+
+fn load_slides_from_sources(
+    sources: &[PathBuf],
+) -> Result<(Vec<Slide>, Vec<PathBuf>), Box<dyn std::error::Error>> {
+    let mut slides = Vec::new();
+    let mut empty_sources = Vec::new();
+
+    for (deck_index, path) in sources.iter().enumerate() {
+        let file = File::open(path).map_err(|error| {
+            io::Error::new(error.kind(), format!("{}: {}", path.display(), error))
+        })?;
+        let reader = BufReader::new(file);
+        let source = Arc::new(path.clone());
+        let mut parsed = parse_slides(reader, &source, deck_index)?;
+        if parsed.is_empty() {
+            empty_sources.push(path.clone());
+        } else {
+            slides.append(&mut parsed);
+        }
+    }
+
+    Ok((slides, empty_sources))
+}
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("\x1b[31mBłąd:\x1b[0m {}", error);
@@ -281,8 +479,9 @@ fn main() {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
     let cli = Cli::parse();
-    let script_path = cli.script.clone();
+    let sources = gather_sources(&cli)?;
     let mut config = Config::from_sources(&cli)?;
+    let (slides, empty_sources) = load_slides_from_sources(&sources)?;
 
     if let Some(banner_path) = config.banner_path() {
         display_banner(&config, banner_path)?;
@@ -290,18 +489,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     retro_separator(&config, config.presentation_title());
-    print_session_meta(&config, &script_path);
+    print_session_meta(&config, &sources, slides.len());
 
-    let file = File::open(&script_path).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!("{}: {}", script_path.display(), error),
-        )
-    })?;
-    let reader = BufReader::new(file);
-    let segments = parse_segments(reader)?;
+    for empty in empty_sources {
+        eprintln!(
+            "{}⚠ {}{}{}{} brak slajdów w {}",
+            config.color_dim(),
+            config.color_accent(),
+            BOLD,
+            "UWAGA",
+            RESET,
+            empty.display()
+        );
+    }
 
-    if segments.is_empty() {
+    if slides.is_empty() {
         print_frame_top(&config);
         print_empty_frame_message(&config)?;
         print_frame_bottom(&config);
@@ -316,7 +518,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    run_presentation(&mut config, &segments)?;
+    run_presentation(&mut config, &slides)?;
 
     println!();
 
@@ -386,14 +588,15 @@ pub(crate) fn transition_animation(config: &Config) -> io::Result<()> {
     Ok(())
 }
 
-pub(crate) fn animate_line(
+pub(crate) fn render_segment(
     config: &Config,
-    index: usize,
+    slide_index: usize,
+    line_index: usize,
     segment: &Segment,
     animate: bool,
 ) -> io::Result<()> {
     let mut stdout = io::stdout();
-    let index_label = format!("{:03}", index + 1);
+    let index_label = format!("{:03}.{:02}", slide_index + 1, line_index + 1);
     let prefix = format!("│ {} :: ", index_label);
     let available = config.frame_width().saturating_sub(prefix.len() + 1);
 
@@ -500,17 +703,31 @@ pub(crate) fn animate_line(
     Ok(())
 }
 
-fn print_session_meta(config: &Config, script_path: &Path) {
+fn print_session_meta(config: &Config, sources: &[PathBuf], total_slides: usize) {
+    let label = if sources.len() == 1 {
+        sources[0].display().to_string()
+    } else {
+        let mut samples: Vec<String> = sources
+            .iter()
+            .take(3)
+            .map(|path| path.display().to_string())
+            .collect();
+        if sources.len() > 3 {
+            samples.push(format!("… (+{} więcej)", sources.len() - 3));
+        }
+        samples.join(", ")
+    };
+
     println!(
-        "{}SOURCE :: {}{}{}{}",
+        "{}SOURCES :: {}{}{}{}",
         config.color_dim(),
         BOLD,
         config.color_accent(),
-        script_path.display(),
+        label,
         RESET
     );
     println!(
-        "{}THEME  :: {}{}{}{}  {}FRAME :: {}{}{}{}  {}MODE :: {}{}{}{}",
+        "{}THEME  :: {}{}{}{}  {}FRAME :: {}{}{}{}  {}DECKS :: {}{}{}{}  {}SLIDES :: {}{}{}{}  {}MODE :: {}{}{}{}  {}PANEL :: {}{}{}{}",
         config.color_dim(),
         BOLD,
         config.color_glow(),
@@ -524,11 +741,26 @@ fn print_session_meta(config: &Config, script_path: &Path) {
         config.color_dim(),
         BOLD,
         config.color_accent(),
+        sources.len(),
+        RESET,
+        config.color_dim(),
+        BOLD,
+        config.color_accent(),
+        total_slides,
+        RESET,
+        config.color_dim(),
+        BOLD,
+        config.color_accent(),
         if config.animations_enabled() {
             "CINEMATIC"
         } else {
             "INSTANT"
         },
+        RESET,
+        config.color_dim(),
+        BOLD,
+        config.color_accent(),
+        if config.presenter_mode() { "ON" } else { "OFF" },
         RESET
     );
     println!();
