@@ -30,10 +30,13 @@ zapewnia czytelne komunikaty o błędach oraz wbudowaną pomoc:
 cargo run -- --help
 ```
 
-Podstawowe uruchomienie wymaga wskazania pliku z treścią prezentacji:
+Podstawowe uruchomienie wymaga wskazania pliku z treścią prezentacji (możesz
+też przekazać kilka plików jednocześnie – zostaną odtworzone kolejno):
 
 ```bash
 cargo run -- presentations/demo.txt
+# lub wiele plików
+cargo run -- presentations/intro.txt presentations/q_and_a.txt
 ```
 
 Najważniejsze opcje:
@@ -45,6 +48,39 @@ Najważniejsze opcje:
 - `--theme-path <ŚCIEŻKA>` – wczytanie motywu z pliku TOML (priorytet nad `--theme`)
 - `--instant` – wyłącza animacje (natychmiastowe renderowanie)
 - `--skip-banner` – pomija wyświetlenie baneru
+- `--playlist <ŚCIEŻKA>` – ładuje listę prezentacji z pliku tekstowego (jedna
+  ścieżka na linię, dopuszczalne komentarze `#`)
+- `--directory <KATALOG>` – odtwarza wszystkie pliki z katalogu (alfabetycznie)
+- `--presenter` – włącza panel prezentera z zegarem i notatkami
+
+Playlisty mają pierwszeństwo po plikach przekazanych bezpośrednio w linii
+poleceń, a katalog dopełnia listę. Aplikacja automatycznie pomija duplikaty
+utrzymując kolejność pierwszego wystąpienia.
+
+### Format slajdów
+
+Pojedynczy slajd może zawierać wiele wierszy (nagłówki, listy, cytaty itd.).
+Pusta linia rozdziela kolejne slajdy, dzięki czemu wygodnie grupujesz treści w
+bloki. Notatki prelegenta oznacz prefiksem `@@` – nie pojawią się na ekranie
+uczestników, ale będą widoczne w trybie prezentera.
+
+Przykład fragmentu skryptu:
+
+```
+# Wstęp
+- Czym jest projekt
+- Jak działa CLI
+
+@@ przypomnij o ankiecie na końcu
+> Cytat inspirujący
+```
+
+### Tryb prezentera
+
+Przełącznik `--presenter` uruchamia dodatkowy panel z informacjami o czasie
+trwania sesji, numerach slajdów oraz listą notatek oznaczonych w pliku `@@`.
+Panel aktualizuje się automatycznie przy każdej zmianie slajdu, a notatki są
+numerowane dla łatwej referencji.
 
 ### Tryb interaktywny i skróty
 
