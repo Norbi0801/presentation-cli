@@ -10,6 +10,10 @@ use std::time::Duration;
 use clap::{Parser, ValueEnum};
 use dotenvy::dotenv;
 
+mod theme;
+
+use crate::theme::{self, ThemePalette};
+
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
 const ITALIC: &str = "\x1b[3m";
@@ -37,6 +41,9 @@ struct Cli {
     /// Wybór motywu kolorystycznego
     #[arg(long, value_enum)]
     theme: Option<ThemeName>,
+    /// Ścieżka do pliku motywu w formacie TOML
+    #[arg(long)]
+    theme_path: Option<PathBuf>,
     /// Natychmiastowe renderowanie (bez animacji)
     #[arg(long)]
     instant: bool,
@@ -54,11 +61,17 @@ enum ThemeName {
 }
 
 impl ThemeName {
-    fn defaults(self) -> (&'static str, &'static str, &'static str) {
+    fn defaults(self) -> ThemePalette {
         match self {
-            ThemeName::Neon => ("\x1b[38;5;214m", "\x1b[38;5;238m", "\x1b[38;5;51m"),
-            ThemeName::Amber => ("\x1b[38;5;178m", "\x1b[38;5;94m", "\x1b[38;5;221m"),
-            ThemeName::Arctic => ("\x1b[38;5;195m", "\x1b[38;5;250m", "\x1b[38;5;117m"),
+            ThemeName::Neon => {
+                ThemePalette::new("\x1b[38;5;214m", "\x1b[38;5;238m", "\x1b[38;5;51m")
+            }
+            ThemeName::Amber => {
+                ThemePalette::new("\x1b[38;5;178m", "\x1b[38;5;94m", "\x1b[38;5;221m")
+            }
+            ThemeName::Arctic => {
+                ThemePalette::new("\x1b[38;5;195m", "\x1b[38;5;250m", "\x1b[38;5;117m")
+            }
         }
     }
 }
@@ -75,53 +88,38 @@ impl fmt::Display for ThemeName {
 }
 
 #[derive(Debug, Clone)]
-struct ThemePalette {
-    accent: String,
-    dim: String,
-    glow: String,
-}
-
-impl ThemePalette {
-    fn accent(&self) -> &str {
-        &self.accent
-    }
-
-    fn dim(&self) -> &str {
-        &self.dim
-    }
-
-    fn glow(&self) -> &str {
-        &self.glow
-    }
-}
-
-#[derive(Debug, Clone)]
 struct Config {
     frame_width: usize,
     palette: ThemePalette,
     banner_path: Option<PathBuf>,
     presentation_title: String,
-    theme: ThemeName,
+    theme_label: String,
     animations_enabled: bool,
 }
 
 impl Config {
     fn from_sources(cli: &Cli) -> Result<Self, Box<dyn std::error::Error>> {
-        let theme = cli
-            .theme
-            .or_else(|| {
-                env::var("PRESENTATION_THEME")
-                    .ok()
-                    .and_then(|value| ThemeName::from_str(&value, true).ok())
-            })
-            .unwrap_or(ThemeName::Neon);
+        let (theme_label, defaults) = if let Some(path) = cli.theme_path.as_deref() {
+            let spec = theme::load_from_path(path)?;
+            (spec.label().to_string(), spec.palette().clone())
+        } else {
+            let theme = cli
+                .theme
+                .or_else(|| {
+                    env::var("PRESENTATION_THEME")
+                        .ok()
+                        .and_then(|value| ThemeName::from_str(&value, true).ok())
+                })
+                .unwrap_or(ThemeName::Neon);
 
-        let (accent_default, dim_default, glow_default) = theme.defaults();
-        let palette = ThemePalette {
-            accent: env::var("COLOR_ACCENT").unwrap_or_else(|_| accent_default.to_string()),
-            dim: env::var("COLOR_DIM").unwrap_or_else(|_| dim_default.to_string()),
-            glow: env::var("COLOR_GLOW").unwrap_or_else(|_| glow_default.to_string()),
+            (theme.to_string(), theme.defaults())
         };
+
+        let palette = ThemePalette::new(
+            env::var("COLOR_ACCENT").unwrap_or_else(|_| defaults.accent().to_string()),
+            env::var("COLOR_DIM").unwrap_or_else(|_| defaults.dim().to_string()),
+            env::var("COLOR_GLOW").unwrap_or_else(|_| defaults.glow().to_string()),
+        );
 
         let frame_width = cli
             .frame_width
@@ -155,7 +153,7 @@ impl Config {
             palette,
             banner_path,
             presentation_title,
-            theme,
+            theme_label,
             animations_enabled: !cli.instant,
         })
     }
@@ -184,8 +182,8 @@ impl Config {
         &self.presentation_title
     }
 
-    fn theme(&self) -> ThemeName {
-        self.theme
+    fn theme_label(&self) -> &str {
+        &self.theme_label
     }
 
     fn animations_enabled(&self) -> bool {
@@ -506,7 +504,7 @@ fn print_session_meta(config: &Config, script_path: &Path) {
         config.color_dim(),
         BOLD,
         config.color_glow(),
-        config.theme(),
+        config.theme_label().to_uppercase(),
         RESET,
         config.color_dim(),
         BOLD,

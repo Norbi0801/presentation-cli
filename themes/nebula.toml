@@ -1,0 +1,4 @@
+name = "Nebula"
+accent = "\x1b[38;5;140m"
+dim = "\x1b[38;5;240m"
+glow = "\x1b[38;5;219m"
