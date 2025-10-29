@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::env;
 use std::fmt;
 use std::fs::File;
@@ -10,8 +9,10 @@ use std::time::Duration;
 use clap::{Parser, ValueEnum};
 use dotenvy::dotenv;
 
+mod interaction;
 mod theme;
 
+use crate::interaction::run_presentation;
 use crate::theme::{self, ThemePalette};
 
 const RESET: &str = "\x1b[0m";
@@ -88,7 +89,7 @@ impl fmt::Display for ThemeName {
 }
 
 #[derive(Debug, Clone)]
-struct Config {
+pub(crate) struct Config {
     frame_width: usize,
     palette: ThemePalette,
     banner_path: Option<PathBuf>,
@@ -158,19 +159,19 @@ impl Config {
         })
     }
 
-    fn frame_width(&self) -> usize {
+    pub(crate) fn frame_width(&self) -> usize {
         self.frame_width
     }
 
-    fn color_accent(&self) -> &str {
+    pub(crate) fn color_accent(&self) -> &str {
         self.palette.accent()
     }
 
-    fn color_dim(&self) -> &str {
+    pub(crate) fn color_dim(&self) -> &str {
         self.palette.dim()
     }
 
-    fn color_glow(&self) -> &str {
+    pub(crate) fn color_glow(&self) -> &str {
         self.palette.glow()
     }
 
@@ -186,15 +187,88 @@ impl Config {
         &self.theme_label
     }
 
-    fn animations_enabled(&self) -> bool {
+    pub(crate) fn animations_enabled(&self) -> bool {
         self.animations_enabled
     }
 
-    fn pause(&self, duration: Duration) {
+    pub(crate) fn pause(&self, duration: Duration) {
         if self.animations_enabled {
             thread::sleep(duration);
         }
     }
+
+    pub(crate) fn adjust_frame_width(&mut self, delta: isize) -> bool {
+        let current = self.frame_width as isize;
+        let updated = (current + delta).max(40) as usize;
+        if updated != self.frame_width {
+            self.frame_width = updated;
+            return true;
+        }
+        false
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Segment {
+    kind: SegmentKind,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum SegmentKind {
+    Heading(String),
+    Bullet(String),
+    Callout(String),
+    Plain(String),
+    Separator,
+}
+
+impl Segment {
+    fn new(kind: SegmentKind) -> Self {
+        Self { kind }
+    }
+
+    pub(crate) fn kind(&self) -> &SegmentKind {
+        &self.kind
+    }
+}
+
+fn parse_segments<R: BufRead>(reader: R) -> io::Result<Vec<Segment>> {
+    let mut segments = Vec::new();
+    for line in reader.lines() {
+        let line = line?;
+        segments.push(classify_segment(&line));
+    }
+    Ok(segments)
+}
+
+fn classify_segment(line: &str) -> Segment {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return Segment::new(SegmentKind::Plain(String::new()));
+    }
+
+    if trimmed.len() >= 3 && trimmed.chars().all(|ch| matches!(ch, '-' | '–' | '=')) {
+        return Segment::new(SegmentKind::Separator);
+    }
+
+    if trimmed.starts_with('#') {
+        let content = trimmed.trim_start_matches('#').trim();
+        if !content.is_empty() {
+            return Segment::new(SegmentKind::Heading(content.to_string()));
+        }
+    }
+
+    if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
+        let content = trimmed[2..].trim_start();
+        return Segment::new(SegmentKind::Bullet(content.to_string()));
+    }
+
+    if trimmed.starts_with('>') {
+        let content = trimmed.trim_start_matches('>').trim_start();
+        return Segment::new(SegmentKind::Callout(content.to_string()));
+    }
+
+    Segment::new(SegmentKind::Plain(trimmed.to_string()))
 }
 
 fn main() {
@@ -208,7 +282,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
     let cli = Cli::parse();
     let script_path = cli.script.clone();
-    let config = Config::from_sources(&cli)?;
+    let mut config = Config::from_sources(&cli)?;
 
     if let Some(banner_path) = config.banner_path() {
         display_banner(&config, banner_path)?;
@@ -225,31 +299,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         )
     })?;
     let reader = BufReader::new(file);
+    let segments = parse_segments(reader)?;
 
-    print_frame_top(&config);
-    let mut rendered_anything = false;
-    for (index, line) in reader.lines().enumerate() {
-        let line = line?;
-        rendered_anything = true;
-
-        if index == 0 {
-            wait_for_enter(&config, "Naciśnij Enter, aby uruchomić sekwencję...")?;
-        } else {
-            wait_for_enter(&config, "Enter -> kolejna sekwencja")?;
-        }
-
-        transition_animation(&config)?;
-        println!();
-
-        animate_line(&config, index, line.trim_end_matches('\r'))?;
-    }
-
-    if !rendered_anything {
+    if segments.is_empty() {
+        print_frame_top(&config);
         print_empty_frame_message(&config)?;
-    }
-    print_frame_bottom(&config);
-
-    if !rendered_anything {
+        print_frame_bottom(&config);
         println!(
             "{}⚠ {}{}Brak treści do wyświetlenia{}",
             config.color_dim(),
@@ -257,7 +312,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             ITALIC,
             RESET
         );
+        println!();
+        return Ok(());
     }
+
+    run_presentation(&mut config, &segments)?;
 
     println!();
 
@@ -299,17 +358,7 @@ fn display_banner(config: &Config, path: &Path) -> Result<(), Box<dyn std::error
     Ok(())
 }
 
-fn wait_for_enter(config: &Config, message: &str) -> io::Result<()> {
-    let mut stdout = io::stdout();
-    print!("{}{}{} ", config.color_dim(), message, RESET);
-    stdout.flush()?;
-
-    let mut buffer = String::new();
-    io::stdin().read_line(&mut buffer)?;
-    Ok(())
-}
-
-fn transition_animation(config: &Config) -> io::Result<()> {
+pub(crate) fn transition_animation(config: &Config) -> io::Result<()> {
     if !config.animations_enabled() {
         return Ok(());
     }
@@ -337,49 +386,12 @@ fn transition_animation(config: &Config) -> io::Result<()> {
     Ok(())
 }
 
-fn animate_line(config: &Config, index: usize, text: &str) -> io::Result<()> {
-    enum LineKind<'a> {
-        Heading(Cow<'a, str>),
-        Bullet(Cow<'a, str>),
-        Callout(Cow<'a, str>),
-        Plain(Cow<'a, str>),
-        Separator,
-    }
-
-    fn classify_line(input: &str) -> LineKind<'_> {
-        let trimmed = input.trim();
-        if trimmed.is_empty() {
-            return LineKind::Plain(Cow::Borrowed(""));
-        }
-
-        if trimmed.len() >= 3
-            && trimmed
-                .chars()
-                .all(|ch| ch == '-' || ch == '–' || ch == '=')
-        {
-            return LineKind::Separator;
-        }
-
-        if trimmed.starts_with('#') {
-            let content = trimmed.trim_start_matches('#').trim();
-            if !content.is_empty() {
-                return LineKind::Heading(Cow::Owned(content.to_string()));
-            }
-        }
-
-        if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
-            let content = trimmed[2..].trim_start();
-            return LineKind::Bullet(Cow::Owned(content.to_string()));
-        }
-
-        if trimmed.starts_with('>') {
-            let content = trimmed.trim_start_matches('>').trim_start();
-            return LineKind::Callout(Cow::Owned(content.to_string()));
-        }
-
-        LineKind::Plain(Cow::Owned(trimmed.to_string()))
-    }
-
+pub(crate) fn animate_line(
+    config: &Config,
+    index: usize,
+    segment: &Segment,
+    animate: bool,
+) -> io::Result<()> {
     let mut stdout = io::stdout();
     let index_label = format!("{:03}", index + 1);
     let prefix = format!("│ {} :: ", index_label);
@@ -388,103 +400,101 @@ fn animate_line(config: &Config, index: usize, text: &str) -> io::Result<()> {
     print!("{}{}{}", config.color_dim(), prefix, RESET);
     stdout.flush()?;
 
-    match classify_line(text) {
-        LineKind::Separator => {
-            let fill = "─".repeat(available);
-            print!("{}{}{}", config.color_dim(), fill, RESET);
-            print!("{}│{}", config.color_dim(), RESET);
-            println!();
-        }
-        kind => {
-            let (display_text, color, style_prefix, delay) = match kind {
-                LineKind::Heading(content) => (
-                    content.to_uppercase(),
-                    config.color_glow(),
-                    format!("{}{}", BOLD, UNDERLINE),
-                    Duration::from_millis(35),
-                ),
-                LineKind::Bullet(content) => (
-                    format!("• {}", content),
-                    config.color_accent(),
-                    String::new(),
-                    Duration::from_millis(45),
-                ),
-                LineKind::Callout(content) => (
-                    format!("❝ {} ❞", content),
-                    config.color_glow(),
-                    ITALIC.to_string(),
-                    Duration::from_millis(38),
-                ),
-                LineKind::Plain(content) => (
-                    content.to_string(),
-                    if content.is_empty() {
-                        config.color_dim()
-                    } else {
-                        config.color_accent()
-                    },
-                    String::new(),
-                    Duration::from_millis(55),
-                ),
-                LineKind::Separator => unreachable!(),
-            };
-
-            let glyphs: Vec<char> = display_text.chars().collect();
-            let mut printed = 0;
-
-            if available > 0 && (!glyphs.is_empty() || !style_prefix.is_empty()) {
-                if !style_prefix.is_empty() {
-                    print!("{}", style_prefix);
-                }
-                print!("{}", color);
-                stdout.flush()?;
-
-                if config.animations_enabled() {
-                    for (i, ch) in glyphs.iter().enumerate() {
-                        if printed >= available {
-                            break;
-                        }
-
-                        if printed == available.saturating_sub(1) && i < glyphs.len() - 1 {
-                            print!("›");
-                            stdout.flush()?;
-                            printed += 1;
-                            break;
-                        }
-
-                        print!("{}", ch);
-                        stdout.flush()?;
-                        config.pause(delay);
-                        printed += 1;
-                    }
+    if let SegmentKind::Separator = segment.kind() {
+        let fill = "─".repeat(available);
+        print!("{}{}{}", config.color_dim(), fill, RESET);
+        print!("{}│{}", config.color_dim(), RESET);
+        println!();
+    } else {
+        let (display_text, color, style_prefix, delay) = match segment.kind() {
+            SegmentKind::Heading(text) => (
+                text.to_uppercase(),
+                config.color_glow(),
+                Some(format!("{}{}", BOLD, UNDERLINE)),
+                Duration::from_millis(35),
+            ),
+            SegmentKind::Bullet(text) => (
+                format!("• {}", text),
+                config.color_accent(),
+                None,
+                Duration::from_millis(45),
+            ),
+            SegmentKind::Callout(text) => (
+                format!("❝ {} ❞", text),
+                config.color_glow(),
+                Some(ITALIC.to_string()),
+                Duration::from_millis(38),
+            ),
+            SegmentKind::Plain(text) => (
+                text.to_string(),
+                if text.is_empty() {
+                    config.color_dim()
                 } else {
-                    let mut buffer = String::new();
-                    for (i, ch) in glyphs.iter().enumerate() {
-                        if printed >= available {
-                            break;
-                        }
+                    config.color_accent()
+                },
+                None,
+                Duration::from_millis(55),
+            ),
+            SegmentKind::Separator => unreachable!(),
+        };
 
-                        if printed == available.saturating_sub(1) && i < glyphs.len() - 1 {
-                            buffer.push('›');
-                            printed += 1;
-                            break;
-                        }
+        let style_prefix_ref = style_prefix.as_deref().unwrap_or("");
+        let glyphs: Vec<char> = display_text.chars().collect();
+        let mut printed = 0;
 
-                        buffer.push(*ch);
-                        printed += 1;
+        if available > 0 && (!glyphs.is_empty() || !style_prefix_ref.is_empty()) {
+            if !style_prefix_ref.is_empty() {
+                print!("{}", style_prefix_ref);
+            }
+            print!("{}", color);
+            stdout.flush()?;
+
+            if animate && config.animations_enabled() {
+                for (i, ch) in glyphs.iter().enumerate() {
+                    if printed >= available {
+                        break;
                     }
-                    print!("{}", buffer);
+
+                    if printed == available.saturating_sub(1) && i < glyphs.len() - 1 {
+                        print!("›");
+                        stdout.flush()?;
+                        printed += 1;
+                        break;
+                    }
+
+                    print!("{}", ch);
+                    stdout.flush()?;
+                    config.pause(delay);
+                    printed += 1;
                 }
+            } else {
+                let mut buffer = String::new();
+                for (i, ch) in glyphs.iter().enumerate() {
+                    if printed >= available {
+                        break;
+                    }
 
-                print!("{}", RESET);
+                    if printed == available.saturating_sub(1) && i < glyphs.len() - 1 {
+                        buffer.push('›');
+                        printed += 1;
+                        break;
+                    }
+
+                    buffer.push(*ch);
+                    printed += 1;
+                }
+                print!("{}", buffer);
             }
 
-            let padding = available.saturating_sub(printed);
-            if padding > 0 {
-                print!("{}{}{}", config.color_dim(), " ".repeat(padding), RESET);
-            }
-            print!("{}│{}", config.color_dim(), RESET);
-            println!();
+            print!("{}", RESET);
         }
+
+        let padding = available.saturating_sub(printed);
+        if padding > 0 {
+            print!("{}{}{}", config.color_dim(), " ".repeat(padding), RESET);
+        }
+        print!("{}│{}", config.color_dim(), RESET);
+        println!();
     }
 
     Ok(())
@@ -542,7 +552,7 @@ fn retro_separator(config: &Config, label: &str) {
     );
 }
 
-fn print_frame_top(config: &Config) {
+pub(crate) fn print_frame_top(config: &Config) {
     println!(
         "{}╭{}╮{}",
         config.color_dim(),
@@ -551,7 +561,7 @@ fn print_frame_top(config: &Config) {
     );
 }
 
-fn print_frame_bottom(config: &Config) {
+pub(crate) fn print_frame_bottom(config: &Config) {
     println!(
         "{}╰{}╯{}",
         config.color_dim(),

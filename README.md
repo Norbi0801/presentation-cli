@@ -46,6 +46,19 @@ Najważniejsze opcje:
 - `--instant` – wyłącza animacje (natychmiastowe renderowanie)
 - `--skip-banner` – pomija wyświetlenie baneru
 
+### Tryb interaktywny i skróty
+
+Po wczytaniu pierwszej sekwencji prezentacja przechodzi w tryb interaktywny.
+Do sterowania użyj następujących skrótów klawiaturowych:
+
+- `←` / `→` (lub `Enter`) – przejście do poprzedniej / następnej sekwencji,
+- `+` / `-` – zwiększenie lub zmniejszenie szerokości ramki na bieżącym widoku,
+- `q` (lub `Esc`) – zakończenie prezentacji.
+
+Zmiana szerokości ramki działa w locie – bieżąca sekwencja zostanie natychmiast
+przerysowana z uwzględnieniem nowego limitu znaków. Dzięki temu możesz szybko
+dostosować layout do rozmiaru terminala lub wymagań transmisji.
+
 Jeżeli nie podasz baneru, aplikacja użyje ścieżki określonej w zmiennej
 `DEFAULT_BANNER_PATH`.
 
